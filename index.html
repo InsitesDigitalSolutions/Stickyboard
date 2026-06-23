@@ -7,9 +7,12 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <script src="https://unpkg.com/tesseract.js@4.1.1/dist/tesseract.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { background: #F3F4F6; font-family: 'Inter', system-ui, -apple-system, sans-serif; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.5; } }
   </style>
 </head>
 <body>
@@ -18,25 +21,30 @@
   <script type="text/babel">
     const { useState, useRef } = React;
 
+    // ─── Config ────────────────────────────────────────────────────────────────
+
     const CATEGORIES = {
-      work:     { label: "Work",      emoji: "💼", color: "#3B82F6", bg: "#EFF6FF", keywords: ["meeting","project","deadline","report","email","call","client","team","office","work","boss","review","presentation","budget","hire"] },
-      personal: { label: "Personal",  emoji: "🏠", color: "#8B5CF6", bg: "#F5F3FF", keywords: ["family","home","personal","health","gym","doctor","appointment","birthday","anniversary","self"] },
-      shopping: { label: "Shopping",  emoji: "🛒", color: "#F59E0B", bg: "#FFFBEB", keywords: ["buy","get","shop","store","grocery","order","purchase","need","pick up","amazon","target"] },
-      idea:     { label: "Ideas",     emoji: "💡", color: "#10B981", bg: "#ECFDF5", keywords: ["idea","think","maybe","consider","explore","what if","could","might","brainstorm","concept","build","create"] },
-      reminder: { label: "Reminder",  emoji: "🔔", color: "#EF4444", bg: "#FEF2F2", keywords: ["remember","don't forget","remind","must","important","urgent","asap","today","tomorrow","due","deadline"] },
-      other:    { label: "Other",     emoji: "📌", color: "#6B7280", bg: "#F9FAFB", keywords: [] },
+      work:     { label: "Work",     emoji: "💼", color: "#3B82F6", bg: "#EFF6FF", keywords: ["meeting","project","deadline","report","email","call","client","team","office","work","boss","review","presentation","budget","hire","agenda","action item","follow up","q1","q2","q3","q4"] },
+      personal: { label: "Personal", emoji: "🏠", color: "#8B5CF6", bg: "#F5F3FF", keywords: ["family","home","personal","health","gym","doctor","appointment","birthday","anniversary","self","kids","school","kids"] },
+      shopping: { label: "Shopping", emoji: "🛒", color: "#F59E0B", bg: "#FFFBEB", keywords: ["buy","get","shop","store","grocery","order","purchase","need","pick up","amazon","target","milk","eggs","bread","groceries"] },
+      idea:     { label: "Ideas",    emoji: "💡", color: "#10B981", bg: "#ECFDF5", keywords: ["idea","think","maybe","consider","explore","what if","could","might","brainstorm","concept","build","create","prototype","feature","app"] },
+      reminder: { label: "Reminder", emoji: "🔔", color: "#EF4444", bg: "#FEF2F2", keywords: ["remember","don't forget","remind","must","important","urgent","asap","today","tomorrow","due","deadline","don't","by eod","by end"] },
+      other:    { label: "Other",    emoji: "📌", color: "#6B7280", bg: "#F9FAFB", keywords: [] },
     };
 
     const COLORS = [
-      { name: "Yellow",  bg: "#FEF08A", border: "#EAB308" },
-      { name: "Pink",    bg: "#FBCFE8", border: "#EC4899" },
-      { name: "Blue",    bg: "#BAE6FD", border: "#0EA5E9" },
-      { name: "Green",   bg: "#BBF7D0", border: "#22C55E" },
-      { name: "Orange",  bg: "#FED7AA", border: "#F97316" },
-      { name: "Purple",  bg: "#E9D5FF", border: "#A855F7" },
-      { name: "Mint",    bg: "#CCFBF1", border: "#14B8A6" },
-      { name: "Rose",    bg: "#FFE4E6", border: "#F43F5E" },
+      { name: "Yellow", bg: "#FEF08A", border: "#EAB308" },
+      { name: "Pink",   bg: "#FBCFE8", border: "#EC4899" },
+      { name: "Blue",   bg: "#BAE6FD", border: "#0EA5E9" },
+      { name: "Green",  bg: "#BBF7D0", border: "#22C55E" },
+      { name: "Orange", bg: "#FED7AA", border: "#F97316" },
+      { name: "Purple", bg: "#E9D5FF", border: "#A855F7" },
+      { name: "Mint",   bg: "#CCFBF1", border: "#14B8A6" },
+      { name: "Rose",   bg: "#FFE4E6", border: "#F43F5E" },
     ];
+
+    // Map category → best sticky color
+    const CAT_COLOR = { work: "#BAE6FD", personal: "#E9D5FF", shopping: "#FEF08A", idea: "#BBF7D0", reminder: "#FBCFE8", other: "#FED7AA" };
 
     const PRIORITY = {
       high:   { label: "High",   dot: "🔴", color: "#EF4444", bg: "#FEE2E2" },
@@ -54,9 +62,25 @@
     }
 
     function detectPriority(text) {
-      if (/urgent|asap|critical|immediately|today|now!/i.test(text)) return "high";
-      if (/soon|this week|important|priority|due/i.test(text)) return "medium";
+      if (/urgent|asap|critical|immediately|today|now!|don't forget|must/i.test(text)) return "high";
+      if (/soon|this week|important|priority|due|by end|eod/i.test(text)) return "medium";
       return "low";
+    }
+
+    // Parse raw OCR text → { title, content }
+    function parseOcrText(raw) {
+      const lines = raw.split("\n")
+        .map(l => l.trim())
+        .filter(l => l.length > 1); // drop near-empty lines
+
+      if (lines.length === 0) return { title: "", content: "" };
+
+      // First line as title if it's reasonably short
+      if (lines[0].length <= 60 && lines.length > 1) {
+        return { title: lines[0], content: lines.slice(1).join("\n") };
+      }
+      // Long first line — put everything in content, no title
+      return { title: "", content: lines.join("\n") };
     }
 
     function fmtDate(d) {
@@ -72,11 +96,13 @@
     const uid = () => ++_id;
 
     const SAMPLE = [
-      { id: uid(), title: "Q3 Review Meeting", content: "Prepare slides\nDiscuss hiring pipeline\nReview budget allocations\nSet goals for Q4", color: "#BAE6FD", category: "work",     priority: "high",   completed: false, createdAt: Date.now() - 86400000 * 2, image: null },
-      { id: uid(), title: "Grocery Run",        content: "Milk & eggs\nFresh vegetables\nChicken breast\nOlive oil\nSourdough bread",           color: "#FEF08A", category: "shopping",  priority: "medium", completed: false, createdAt: Date.now() - 86400000,     image: null },
-      { id: uid(), title: "App idea 💡",        content: "Minimalist habit tracker\nMax 3 habits at a time\nDaily check-in widget\nStreak visualization", color: "#BBF7D0", category: "idea", priority: "low",    completed: false, createdAt: Date.now() - 3600000 * 5,  image: null },
-      { id: uid(), title: "Call dentist",       content: "Book cleaning appointment\nAsk about whitening options", color: "#FBCFE8", category: "reminder", priority: "medium", completed: true,  createdAt: Date.now() - 86400000 * 3, image: null },
+      { id: uid(), title: "Q3 Review Meeting",  content: "Prepare slides\nDiscuss hiring pipeline\nReview budget allocations\nSet goals for Q4", color: "#BAE6FD", category: "work",     priority: "high",   completed: false, createdAt: Date.now() - 86400000 * 2, image: null },
+      { id: uid(), title: "Grocery Run",         content: "Milk & eggs\nFresh vegetables\nChicken breast\nOlive oil\nSourdough bread",             color: "#FEF08A", category: "shopping",  priority: "medium", completed: false, createdAt: Date.now() - 86400000,     image: null },
+      { id: uid(), title: "App idea 💡",         content: "Minimalist habit tracker\nMax 3 habits at a time\nDaily check-in widget\nStreak viz",   color: "#BBF7D0", category: "idea",      priority: "low",    completed: false, createdAt: Date.now() - 3600000 * 5,  image: null },
+      { id: uid(), title: "Call dentist",        content: "Book cleaning appointment\nAsk about whitening options",                                 color: "#FBCFE8", category: "reminder",  priority: "medium", completed: true,  createdAt: Date.now() - 86400000 * 3, image: null },
     ];
+
+    // ─── App ───────────────────────────────────────────────────────────────────
 
     function StickyBoard() {
       const [notes, setNotes]               = useState(SAMPLE);
@@ -157,6 +183,7 @@
         <div style={{ minHeight: "100vh", background: "#F3F4F6" }}>
           <style>{CSS}</style>
 
+          {/* Header */}
           <header style={{ background: "#fff", borderBottom: "1px solid #E5E7EB", position: "sticky", top: 0, zIndex: 50, boxShadow: "0 1px 4px rgba(0,0,0,0.06)" }}>
             <div style={{ maxWidth: 1280, margin: "0 auto", padding: "10px 16px", display: "flex", alignItems: "center", gap: 12 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 7, flexShrink: 0 }}>
@@ -180,6 +207,7 @@
             </div>
           </header>
 
+          {/* Toolbar */}
           <div style={{ background: "#fff", borderBottom: "1px solid #E5E7EB", padding: "0 16px" }}>
             <div style={{ maxWidth: 1280, margin: "0 auto", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", padding: "8px 0" }}>
               <div style={{ display: "flex", gap: 4 }}>
@@ -209,6 +237,7 @@
             </div>
           </div>
 
+          {/* Board */}
           <main style={{ maxWidth: 1280, margin: "0 auto", padding: 16 }}>
             {filtered.length === 0 ? (
               <div style={{ textAlign: "center", padding: "80px 20px", color: "#9CA3AF" }}>
@@ -248,6 +277,8 @@
       );
     }
 
+    // ─── NoteCard ──────────────────────────────────────────────────────────────
+
     function NoteCard({ note, view, onToggle, onEdit, onDelete, onView }) {
       const [hover, setHover] = useState(false);
       const cat   = CATEGORIES[note.category] || CATEGORIES.other;
@@ -256,8 +287,7 @@
       const lines = note.content.split("\n").filter(Boolean);
 
       return (
-        <div
-          onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
+        <div onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
           style={{
             background: note.completed ? "#F9FAFB" : note.color,
             border: `1px solid ${note.completed ? "#E5E7EB" : color.border + "66"}`,
@@ -275,12 +305,12 @@
             border: `2px solid ${note.completed ? "#10B981" : "#D1D5DB"}`,
             background: note.completed ? "#10B981" : "transparent",
             cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
-            color: "#fff", fontWeight: 700, float: view === "list" ? "none" : "left",
-            marginRight: view === "list" ? 0 : 8, marginTop: 1, transition: "all 0.18s",
+            color: "#fff", fontWeight: 700,
+            float: view === "list" ? "none" : "left", marginRight: view === "list" ? 0 : 8, marginTop: 1,
+            transition: "all 0.18s",
           }}>
             {note.completed && <span style={{ fontSize: 11 }}>✓</span>}
           </button>
-
           <div style={{ flex: 1, minWidth: 0 }}>
             {note.image && (
               <div style={{ marginBottom: 8, borderRadius: 8, overflow: "hidden", cursor: "pointer" }} onClick={() => onView(note)}>
@@ -297,7 +327,6 @@
                 <Btn onClick={() => onDelete(note.id)} danger>🗑️</Btn>
               </div>
             </div>
-
             {lines.length > 0 && view !== "list" && (
               <ul style={{ margin: "0 0 10px", padding: 0, listStyle: "none" }}>
                 {lines.slice(0, 4).map((ln, i) => (
@@ -309,13 +338,11 @@
                 {lines.length > 4 && <li style={{ fontSize: 12, color: "#9CA3AF", cursor: "pointer" }} onClick={() => onView(note)}>+{lines.length - 4} more…</li>}
               </ul>
             )}
-
             {view === "list" && note.content && (
               <p style={{ margin: "4px 0 0", fontSize: 13, color: "#6B7280", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                 {note.content.replace(/\n/g, "  •  ")}
               </p>
             )}
-
             <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 5, marginTop: view === "list" ? 4 : 0 }}>
               <span style={{ fontSize: 11, padding: "2px 7px", borderRadius: 10, background: cat.bg, color: cat.color, fontWeight: 600 }}>{cat.emoji} {cat.label}</span>
               {note.priority !== "low" && (
@@ -328,9 +355,39 @@
       );
     }
 
+    // ─── FormModal ─────────────────────────────────────────────────────────────
+
     function FormModal({ form, setForm, mode, setMode, editing, onSave, onClose, fileRef, cameraRef, handleImage }) {
+      const [ocrState, setOcrState] = useState("idle"); // idle | loading | done | error
+      const [ocrProgress, setOcrProgress] = useState(0);
       const valid = form.title.trim() || form.content.trim() || form.image;
       const previewColor = COLORS.find(c => c.bg === form.color) || COLORS[0];
+
+      async function runOCR() {
+        if (!form.image) return;
+        setOcrState("loading");
+        setOcrProgress(0);
+        try {
+          const result = await Tesseract.recognize(form.image, "eng", {
+            logger: m => {
+              if (m.status === "recognizing text") {
+                setOcrProgress(Math.round(m.progress * 100));
+              }
+            },
+          });
+          const raw = result.data.text;
+          const { title, content } = parseOcrText(raw);
+          const fullText = `${title} ${content}`;
+          const category = detectCategory(fullText);
+          const priority  = detectPriority(fullText);
+          const color     = CAT_COLOR[category] || COLORS[0].bg;
+          setForm(f => ({ ...f, title, content, category, priority, color }));
+          setOcrState("done");
+        } catch (e) {
+          console.error(e);
+          setOcrState("error");
+        }
+      }
 
       return (
         <>
@@ -342,49 +399,100 @@
           {!editing && (
             <div style={{ display: "flex", gap: 8, padding: "12px 20px 0" }}>
               {[["add","✏️ Manual"], ["scan","📷 Scan / Photo"]].map(([m, label]) => (
-                <button key={m} onClick={() => setMode(m)} className={mode === m ? "mode-tab-active" : "mode-tab"}>{label}</button>
+                <button key={m} onClick={() => { setMode(m); setOcrState("idle"); }} className={mode === m ? "mode-tab-active" : "mode-tab"}>{label}</button>
               ))}
             </div>
           )}
 
           <div style={{ padding: 20, overflowY: "auto" }}>
+
+            {/* ── Scan pane ── */}
             {mode === "scan" && (
               <div style={{ marginBottom: 16 }}>
-                {form.image ? (
-                  <div style={{ position: "relative" }}>
-                    <img src={form.image} alt="Preview" style={{ width: "100%", maxHeight: 260, objectFit: "contain", borderRadius: 10, background: "#F3F4F6", display: "block" }} />
-                    <button onClick={() => setForm(f => ({ ...f, image: null }))}
-                      style={{ position: "absolute", top: 8, right: 8, background: "rgba(0,0,0,0.55)", border: "none", color: "#fff", borderRadius: "50%", width: 28, height: 28, cursor: "pointer", fontSize: 14 }}>✕</button>
-                  </div>
-                ) : (
+                {!form.image ? (
                   <div style={{ border: "2px dashed #E5E7EB", borderRadius: 12, padding: "36px 20px", textAlign: "center", background: "#F9FAFB" }}>
                     <div style={{ fontSize: 44, marginBottom: 8 }}>📷</div>
-                    <p style={{ margin: "0 0 14px", color: "#6B7280", fontSize: 14 }}>Take a photo or upload an image of your sticky note</p>
+                    <p style={{ margin: "0 0 6px", fontWeight: 600, fontSize: 15, color: "#111827" }}>Scan a sticky note</p>
+                    <p style={{ margin: "0 0 14px", color: "#6B7280", fontSize: 13 }}>Take a photo or upload an image — text will be extracted automatically</p>
                     <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
                       <button className="btn-ghost" onClick={() => cameraRef.current?.click()} style={{ padding: "9px 18px" }}>📱 Camera</button>
-                      <button className="btn-ghost" onClick={() => fileRef.current?.click()}   style={{ padding: "9px 18px" }}>📁 Upload File</button>
+                      <button className="btn-ghost" onClick={() => fileRef.current?.click()}   style={{ padding: "9px 18px" }}>📁 Upload</button>
                     </div>
+                  </div>
+                ) : (
+                  <div>
+                    {/* Image preview */}
+                    <div style={{ position: "relative", borderRadius: 10, overflow: "hidden", marginBottom: 10 }}>
+                      <img src={form.image} alt="Preview" style={{ width: "100%", maxHeight: 220, objectFit: "contain", background: "#F3F4F6", display: "block" }} />
+                      <button onClick={() => { setForm(f => ({ ...f, image: null, title: "", content: "" })); setOcrState("idle"); }}
+                        style={{ position: "absolute", top: 8, right: 8, background: "rgba(0,0,0,0.55)", border: "none", color: "#fff", borderRadius: "50%", width: 28, height: 28, cursor: "pointer", fontSize: 14 }}>✕</button>
+                    </div>
+
+                    {/* OCR states */}
+                    {ocrState === "idle" && (
+                      <button onClick={runOCR} className="btn-primary" style={{ width: "100%", padding: "11px", fontWeight: 700, fontSize: 14 }}>
+                        ✨ Extract Text from Image
+                      </button>
+                    )}
+
+                    {ocrState === "loading" && (
+                      <div style={{ background: "#EFF6FF", borderRadius: 10, padding: "14px 16px", textAlign: "center" }}>
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, marginBottom: 8 }}>
+                          <div style={{ width: 18, height: 18, border: "2px solid #3B82F6", borderTopColor: "transparent", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
+                          <span style={{ fontWeight: 600, color: "#1D4ED8", fontSize: 14 }}>Reading your note… {ocrProgress}%</span>
+                        </div>
+                        <div style={{ background: "#DBEAFE", borderRadius: 6, height: 6, overflow: "hidden" }}>
+                          <div style={{ width: `${ocrProgress}%`, height: "100%", background: "#3B82F6", transition: "width 0.3s ease", borderRadius: 6 }} />
+                        </div>
+                      </div>
+                    )}
+
+                    {ocrState === "done" && (
+                      <div style={{ background: "#ECFDF5", border: "1px solid #6EE7B7", borderRadius: 10, padding: "10px 14px", display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontSize: 18 }}>✅</span>
+                        <div style={{ flex: 1 }}>
+                          <p style={{ margin: 0, fontWeight: 700, fontSize: 13, color: "#065F46" }}>Text extracted & categorized!</p>
+                          <p style={{ margin: "2px 0 0", fontSize: 12, color: "#047857" }}>Review and edit below before saving.</p>
+                        </div>
+                        <button onClick={runOCR} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, color: "#047857", textDecoration: "underline" }}>Re-scan</button>
+                      </div>
+                    )}
+
+                    {ocrState === "error" && (
+                      <div style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 10, padding: "10px 14px", display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontSize: 18 }}>⚠️</span>
+                        <div style={{ flex: 1 }}>
+                          <p style={{ margin: 0, fontWeight: 700, fontSize: 13, color: "#991B1B" }}>Couldn't read the image</p>
+                          <p style={{ margin: "2px 0 0", fontSize: 12, color: "#B91C1C" }}>Try a clearer photo, or type your note below.</p>
+                        </div>
+                        <button onClick={runOCR} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, color: "#B91C1C", textDecoration: "underline" }}>Retry</button>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
             )}
 
+            {/* Title */}
             <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#9CA3AF", letterSpacing: "0.06em", marginBottom: 5, textTransform: "uppercase" }}>Title</label>
             <input value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))} placeholder="Give your note a title…"
               style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid #E5E7EB", background: "#F9FAFB", color: "#111827", fontSize: 14, outline: "none", marginBottom: 14, boxSizing: "border-box" }} />
 
+            {/* Content */}
             <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#9CA3AF", letterSpacing: "0.06em", marginBottom: 5, textTransform: "uppercase" }}>Content <span style={{ color: "#9CA3AF", fontWeight: 400, textTransform: "none" }}>(each line = bullet)</span></label>
             <textarea value={form.content} onChange={e => setForm(f => ({ ...f, content: e.target.value }))} placeholder={"Write your note here…\nEach line becomes a bullet point"} rows={5}
               style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid #E5E7EB", background: "#F9FAFB", color: "#111827", fontSize: 14, outline: "none", marginBottom: 14, boxSizing: "border-box", resize: "vertical", fontFamily: "inherit", lineHeight: 1.6 }} />
 
+            {/* Color */}
             <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#9CA3AF", letterSpacing: "0.06em", marginBottom: 8, textTransform: "uppercase" }}>Color</label>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
               {COLORS.map(c => (
                 <button key={c.bg} title={c.name} onClick={() => setForm(f => ({ ...f, color: c.bg }))}
-                  style={{ width: 30, height: 30, borderRadius: "50%", background: c.bg, border: `3px solid ${form.color === c.bg ? c.border : "transparent"}`, cursor: "pointer", outline: form.color === c.bg ? `2px solid ${c.border}44` : "none", transition: "all 0.15s" }} />
+                  style={{ width: 30, height: 30, borderRadius: "50%", background: c.bg, border: `3px solid ${form.color === c.bg ? c.border : "transparent"}`, cursor: "pointer", transition: "all 0.15s" }} />
               ))}
             </div>
 
+            {/* Category + Priority */}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
               <div>
                 <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#9CA3AF", letterSpacing: "0.06em", marginBottom: 5, textTransform: "uppercase" }}>Category</label>
@@ -404,6 +512,7 @@
               </div>
             </div>
 
+            {/* Preview */}
             {(form.title || form.content) && (
               <div style={{ borderRadius: 10, padding: "12px 14px", marginBottom: 16, background: form.color, borderLeft: `4px solid ${previewColor.border}` }}>
                 <p style={{ margin: "0 0 2px", fontSize: 11, fontWeight: 700, color: "#6B7280", letterSpacing: 1 }}>PREVIEW</p>
@@ -422,6 +531,8 @@
         </>
       );
     }
+
+    // ─── ViewModal ─────────────────────────────────────────────────────────────
 
     function ViewModal({ note, onClose, onEdit, onToggle }) {
       const cat   = CATEGORIES[note.category] || CATEGORIES.other;
@@ -462,6 +573,8 @@
         </>
       );
     }
+
+    // ─── Helpers ───────────────────────────────────────────────────────────────
 
     function Modal({ children, onClose }) {
       return (
@@ -512,8 +625,7 @@
       input:focus, textarea:focus, select:focus { border-color: #F59E0B !important; box-shadow: 0 0 0 3px rgba(245,158,11,0.15); }
     `;
 
-    const root = ReactDOM.createRoot(document.getElementById('root'));
-    root.render(<StickyBoard />);
+    ReactDOM.createRoot(document.getElementById('root')).render(<StickyBoard />);
   </script>
 </body>
 </html>
